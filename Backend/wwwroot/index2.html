@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fleet Monitor</title>
+
+    <!-- LeafletJS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <!-- SignalR -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/6.0.1/signalr.min.js"></script>
+
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --bg-color: #1a1d24;
+            --primary-color: #2c313a;
+            --secondary-color: #383e49;
+            --text-color: #e0e0e0;
+            --accent-color: #4a90e2;
+            --green-status: #50e3c2;
+            --orange-status: #f5a623;
+            --gray-status: #9b9b9b;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            font-family: 'Roboto', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+        }
+
+        .dashboard-container {
+            display: flex;
+            height: 100vh;
+        }
+
+        #map {
+            flex-grow: 1;
+            height: 100%;
+        }
+
+        .sidebar {
+            width: 300px;
+            background-color: var(--primary-color);
+            padding: 20px;
+            overflow-y: auto;
+        }
+
+        .sidebar-header {
+            margin-bottom: 20px;
+            border-bottom: 1px solid var(--secondary-color);
+            padding-bottom: 15px;
+        }
+
+        .sidebar-header h1 {
+            margin: 0;
+            font-size: 24px;
+            color: white;
+        }
+
+        .sidebar-header p {
+            margin: 5px 0 0;
+            opacity: 0.8;
+        }
+
+        #vehicle-list {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .vehicle-card {
+            background-color: var(--secondary-color);
+            border-radius: 8px;
+            padding: 15px;
+            cursor: pointer;
+            transition: transform 0.2s;
+            border-left: 4px solid var(--gray-status);
+        }
+
+        .vehicle-card:hover {
+            transform: translateY(-2px);
+        }
+
+        .vehicle-card[data-status="In-Transit"] { border-left-color: var(--green-status); }
+        .vehicle-card[data-status="Parked"] { border-left-color: var(--orange-status); }
+        .vehicle-card[data-status="Loading"] { border-left-color: var(--accent-color); }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .status-badge[data-status="In-Transit"] { background-color: var(--green-status); color: #000; }
+        .status-badge[data-status="Parked"] { background-color: var(--orange-status); color: #000; }
+        .status-badge[data-status="Loading"] { background-color: var(--accent-color); color: #000; }
+
+        .vehicle-marker {
+            width: 20px;
+            height: 20px;
+            background-color: var(--accent-color);
+            border: 2px solid white;
+            border-radius: 50%;
+            box-shadow: 0 0 10px rgba(0,0,0,0.5);
+        }
+
+        .vehicle-marker.moving {
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.2); opacity: 0.8; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard-container">
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h1>Fleet Monitor</h1>
+                <p>Live Vehicle Tracking Dashboard</p>
+            </div>
+            <div id="vehicle-list">
+                <!-- Vehicle cards will be dynamically added here -->
+            </div>
+        </div>
+        <div id="map"></div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', async () => {
+            // Initialize map centered on India
+            const map = L.map('map').setView([22.5937, 78.9629], 5);
+            
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                attribution: '©OpenStreetMap, ©CartoDB'
+            }).addTo(map);
+
+            // Initialize SignalR
+            const connection = new signalR.HubConnectionBuilder()
+                .withUrl('/locationHub')
+                .withAutomaticReconnect()
+                .configureLogging(signalR.LogLevel.Information)
+                .build();
+
+            // Store markers and data
+            const markers = new Map();
+            const vehicleData = new Map();
+
+            function createOrUpdateVehicleCard(vehicle) {
+                const vehicleList = document.getElementById('vehicle-list');
+                let card = document.getElementById(`vehicle-${vehicle.id}`);
+
+                if (!card) {
+                    card = document.createElement('div');
+                    card.id = `vehicle-${vehicle.id}`;
+                    card.className = 'vehicle-card';
+                    vehicleList.appendChild(card);
+                }
+
+                card.dataset.status = vehicle.status;
+                card.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <h3 style="margin: 0; font-size: 16px;">${vehicle.model}</h3>
+                        <span class="status-badge" data-status="${vehicle.status}">${vehicle.status}</span>
+                    </div>
+                    <p style="margin: 5px 0;">Driver: ${vehicle.driverName}</p>
+                `;
+
+                card.onclick = () => {
+                    const marker = markers.get(vehicle.id);
+                    if (marker) {
+                        map.flyTo(marker.getLatLng(), 12);
+                    }
+                };
+            }
+
+            function createOrUpdateMarker(vehicle) {
+                let marker = markers.get(vehicle.id);
+                const latlng = [vehicle.latitude, vehicle.longitude];
+
+                if (!marker) {
+                    const icon = L.divIcon({
+                        className: `vehicle-marker${vehicle.status === 'In-Transit' ? ' moving' : ''}`,
+                        iconSize: [20, 20]
+                    });
+
+                    marker = L.marker(latlng, { icon }).addTo(map);
+                    markers.set(vehicle.id, marker);
+                } else {
+                    marker.setLatLng(latlng);
+                }
+
+                marker.bindPopup(`
+                    <b>${vehicle.model}</b><br>
+                    Driver: ${vehicle.driverName}<br>
+                    Status: ${vehicle.status}
+                `);
+            }
+
+            // Handle initial vehicle data
+            connection.on('ReceiveInitialVehicles', (vehicles) => {
+                console.log('Received initial vehicles:', vehicles);
+                vehicles.forEach(vehicle => {
+                    vehicleData.set(vehicle.id, vehicle);
+                    createOrUpdateVehicleCard(vehicle);
+                    createOrUpdateMarker(vehicle);
+                });
+            });
+
+            // Handle vehicle updates
+            connection.on('UpdateVehicleLocation', (vehicle) => {
+                console.log('Received vehicle update:', vehicle);
+                vehicleData.set(vehicle.id, vehicle);
+                createOrUpdateVehicleCard(vehicle);
+                createOrUpdateMarker(vehicle);
+            });
+
+            try {
+                await connection.start();
+                console.log('Connected to SignalR Hub');
+            } catch (err) {
+                console.error('Error connecting to SignalR Hub:', err);
+            }
+        });
+    </script>
+</body>
+</html>
